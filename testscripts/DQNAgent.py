@@ -8,6 +8,7 @@ from collections import namedtuple
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
+
 class ReplayMemory(object):
 
     def __init__(self, capacity):
@@ -30,9 +31,10 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
+
 class DQN(nn.Module):
 
-    def __init__(self, action_set=[None, None], input_height=512, input_width=288):
+    def __init__(self, action_set, input_height=512, input_width=288):
         super(DQN, self).__init__()
         num_actions = len(action_set)
         self.conv1 = nn.Conv2d(3, 16, kernel_size=4, stride=2)
@@ -49,7 +51,7 @@ class DQN(nn.Module):
 
     @staticmethod
     def calculate_conv_out(input_height, input_width, kernel_size, stride):
-        convcalc = lambda x, ks, s: (x - ks) / s + 1
+        def convcalc(x, ks, s): return (x - ks) / s + 1
         h_out = convcalc(input_height, kernel_size, stride)
         w_out = convcalc(input_width, kernel_size, stride)
         assert h_out.is_integer(), "h_out is not an integer, is in fact %r" % h_out
@@ -83,6 +85,7 @@ class DQNAgent(object):
             argmax = np.argmax(self.q_network(in_frame))
             return self.action_set[argmax]
 
+
 class DQNLoss(nn.Module):
 
     def __init__(self, q_network, q_target, action_set, gamma=0.9):
@@ -92,18 +95,49 @@ class DQNLoss(nn.Module):
         self.action_set = action_set
         self.gamma = gamma
 
-    def forward(self, transition_in):
+    def forward(self, transition_in, game_over):
         state, action, next_state, reward = transition_in
         pred_return = self.q_network(state)[self.action_set.index(action)]
-        #TODO: Figure out the terminal state
-        if next_state != TERMINAL
+        if not game_over:
             one_step_return = reward + self.gamma * torch.max(self.q_target(next_state))
         else:
             one_step_return = reward
         return F.mse_loss(pred_return, one_step_return)
 
 
+class Trainer(object):
 
-# class Trainer(object):
+    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, memory_size=500000, max_ep_steps=1000000,
+                 reset_target=10000, gamma=0.9, optimizer=optim.Adam):
+        self.env = env
+        self.agent = agent
+        self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
+        self.memory = memory_func(memory_size)
+        self.optimizer = optimizer(self.agent.q_network.params)
+        self.max_ep_steps = max_ep_steps
+        self.batch_size = batch_size
+        self.reset_target = reset_target
+        self.total_steps = 0
 
-# 	def __init__(self, ):
+    def episode(self):
+        # TODO: Figure out how to get stacked input from environment
+        steps = 0
+        state = self.env.getScreenRGB()
+        while self.env.game_over() is False and steps < self.max_ep_steps:
+            action = self.agent.q_network(state)
+            reward = self.env.act(action)
+            next_state = self.env.getScreenRGB()
+            self.memory.push(state, action, next_state, reward)
+            state = next_state
+            trans_batch = self.memory.sample(self.batch_size)
+            loss = self.loss(trans_batch, self.env.game_over())
+            loss.backward()
+            self.optimizer.step()
+            self.total_steps += 1
+            steps += 1
+            if self.total_steps % self.reset_target == 0:
+                self.agent.update_target()
+
+    def run_training(self, num_episodes=1000):
+        for i in range(num_episodes):
+            self.episode()
