@@ -83,6 +83,27 @@ class DQNAgent(object):
             argmax = np.argmax(self.q_network(in_frame))
             return self.action_set[argmax]
 
+class DQNLoss(nn.Module):
+
+    def __init__(self, q_network, q_target, action_set, gamma=0.9):
+        super(DQNLoss, self).__init__()
+        self.q_network = q_network
+        self.q_target = q_target
+        self.action_set = action_set
+        self.gamma = gamma
+
+    def forward(self, transition_in):
+        state, action, next_state, reward = transition_in
+        pred_return = self.q_network(state)[self.action_set.index(action)]
+        #TODO: Figure out the terminal state
+        if next_state != TERMINAL
+            one_step_return = reward + self.gamma * torch.max(self.q_target(next_state))
+        else:
+            one_step_return = reward
+        return F.mse_loss(pred_return, one_step_return)
+
+
+
 # class Trainer(object):
 
 # 	def __init__(self, ):
