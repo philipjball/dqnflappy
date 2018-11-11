@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
+import random
 from collections import namedtuple
 
 Transition = namedtuple('Transition',
@@ -26,7 +27,7 @@ class ReplayMemory(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        return np.random.choice(self.memory, batch_size, False)
+        return random.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
@@ -108,35 +109,50 @@ class DQNLoss(nn.Module):
 class Trainer(object):
 
     def __init__(self, env, agent, loss_func, memory_func, batch_size=32, memory_size=500000, max_ep_steps=1000000,
-                 reset_target=10000, gamma=0.9, optimizer=optim.Adam):
+                 reset_target=10000, final_exp_frame=1000000, gamma=0.9, optimizer=optim.Adam):
         self.env = env
         self.agent = agent
         self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
         self.memory = memory_func(memory_size)
-        self.optimizer = optimizer(self.agent.q_network.params)
+        self.optimizer = optimizer(self.agent.q_network.parameters())
         self.max_ep_steps = max_ep_steps
         self.batch_size = batch_size
         self.reset_target = reset_target
+        self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
         self.total_steps = 0
+
+    @staticmethod
+    def preprocess_image(input_image):
+        return input_image.permute([2,0,1])
 
     def episode(self):
         # TODO: Figure out how to get stacked input from environment
         steps = 0
-        state = self.env.getScreenRGB()
+        self.env.reset_game()
+        state = self.preprocess_image(torch.Tensor(self.env.getScreenRGB()))
         while self.env.game_over() is False and steps < self.max_ep_steps:
-            action = self.agent.q_network(state)
+            action = self.agent.get_action(state.unsqueeze_(0))
             reward = self.env.act(action)
-            next_state = self.env.getScreenRGB()
+            next_state = self.preprocess_image(torch.Tensor(self.env.getScreenRGB()))
             self.memory.push(state, action, next_state, reward)
             state = next_state
-            trans_batch = self.memory.sample(self.batch_size)
+            if self.total_steps+1 < self.batch_size:
+                this_batch_size = self.total_steps+1
+            else:
+                this_batch_size = self.batch_size
+            trans_batch = self.memory.sample(this_batch_size)
             loss = self.loss(trans_batch, self.env.game_over())
             loss.backward()
             self.optimizer.step()
             self.total_steps += 1
             steps += 1
+            self.set_eps()
             if self.total_steps % self.reset_target == 0:
                 self.agent.update_target()
+
+    # Function to decrease exploration as we increase steps
+    def set_eps(self):
+        self.agent.eps = np.max([0.1, (0.1 + 0.9 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_training(self, num_episodes=1000):
         for i in range(num_episodes):
