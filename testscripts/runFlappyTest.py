@@ -14,7 +14,7 @@ import os
 # stderrToServer=True)
 
 game = FlappyBird()
-p = PLE(game, fps=30, display_screen=True)
+p = PLE(game, fps=30, display_screen=True, frame_skip=4)
 p.init()
 
 flappy_agent = DQNAgent(p.getActionSet(), frame_stack=4)

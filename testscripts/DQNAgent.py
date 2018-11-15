@@ -158,6 +158,7 @@ class Trainer(object):
     @staticmethod
     def preprocess_image(input_image):
         """Permute images to the PyTorch ordering (CxWxH)"""
+        # TODO: Rescale image?!
         if len(input_image.shape) != 3:
             return input_image.unsqueeze_(0)
         return input_image.permute([2,0,1])
