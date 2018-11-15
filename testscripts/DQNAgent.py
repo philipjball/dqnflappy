@@ -4,7 +4,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import random
+from torchvision import transforms
 from collections import namedtuple
+from PIL import Image
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -27,7 +29,7 @@ class KLastFrames(object):
 
     def get(self):
         assert len(self.memory) == self.k, "Trying to get %r-frames before full!" % self.k
-        return torch.cat(self.memory)
+        return torch.cat(self.memory).unsqueeze(0)
 
     def reset(self):
         """Resets the frame stacker"""
@@ -59,14 +61,14 @@ class ReplayMemory(object):
 
 class DQN(nn.Module):
 
-    def __init__(self, action_set, frame_stack=4, input_height=512, input_width=288):
+    def __init__(self, action_set, frame_stack=4, input_height=84, input_width=84):
         super(DQN, self).__init__()
         num_actions = len(action_set)
-        self.conv1 = nn.Conv2d(frame_stack, 16, kernel_size=4, stride=2)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=4, stride=2)
-        self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 64)
-        self.linear2 = nn.Linear(64, num_actions)
+        self.conv1 = nn.Conv2d(frame_stack, 16, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1)
+        self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 128)
+        self.linear2 = nn.Linear(128, num_actions)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -84,17 +86,17 @@ class DQN(nn.Module):
         return int(h_out), int(w_out)
 
     def calculate_final_size(self, input_height, input_width):
-        ho1, wo1 = self.calculate_conv_out(input_height, input_width, 4, 2)
-        ho2, wo2 = self.calculate_conv_out(ho1, wo1, 5, 2)
-        ho3, wo3 = self.calculate_conv_out(ho2, wo2, 4, 2)
+        ho1, wo1 = self.calculate_conv_out(input_height, input_width, 8, 4)
+        ho2, wo2 = self.calculate_conv_out(ho1, wo1, 4, 2)
+        ho3, wo3 = self.calculate_conv_out(ho2, wo2, 3, 1)
         return int(ho3 * wo3 * 32)
 
 
 class DQNAgent(object):
 
-    def __init__(self, action_set, frame_stack=4):
+    def __init__(self, action_set, frame_stack=4, input_height=84, input_width=84):
         self.frame_stack = frame_stack
-        self.q_network = DQN(action_set, frame_stack=frame_stack)
+        self.q_network = DQN(action_set, frame_stack=frame_stack, input_height=input_height, input_width=input_width)
         self.q_target = DQN(action_set, frame_stack=frame_stack)
         self.eps = 1.0
         self.action_set = action_set
@@ -111,7 +113,7 @@ class DQNAgent(object):
         if np.random.rand() < self.eps:
             return self.random_action()
         else:
-            argmax = np.argmax(self.q_network(in_frame))
+            argmax = torch.argmax(self.q_network(in_frame))
             return self.action_set[argmax]
 
 
@@ -126,24 +128,51 @@ class DQNLoss(nn.Module):
 
     def forward(self, transition_in, game_over):
         states, actions, next_states, rewards = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        pred_return_all = self.q_network(torch.stack(states))
+        pred_return_all = self.q_network(torch.cat(states))
         pred_return = []
         for pred_return_row, action in zip(pred_return_all, actions):
-            pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze_(0))
+            pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze(0))
         pred_return = torch.cat(pred_return)
         if not game_over:
-            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.stack(next_states)), dim=1)[0]
+            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.cat(next_states)), dim=1)[0]
         else:
             one_step_return = torch.Tensor(rewards)
         return F.mse_loss(pred_return, one_step_return)
 
 
-class Trainer(object):
-
-    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, memory_size=500000, max_ep_steps=1000000,
-                 reset_target=10000, final_exp_frame=1000000, gamma=0.9, optimizer=optim.Adam):
+class Runner(object):
+    """Runs the experiments (training and testing inherit from this)"""
+    def __init__(self, env, agent, downscale=84):
         self.env = env
         self.agent = agent
+        self.transformer = transforms.Compose([transforms.Resize(downscale), transforms.CenterCrop(downscale)])
+
+    def preprocess_image(self, input_image):
+        """Does a few things:
+        1. Reshape image to 84x84
+        2. Permute images to the PyTorch ordering (CxHxW)
+        3. Convert to PyTorch Tensor
+        """
+        input_image = Image.fromarray(input_image)
+        input_image = self.transformer(input_image)
+        input_image = np.array(input_image).T
+        input_image = torch.Tensor(input_image).unsqueeze(0)
+        return input_image
+
+    def episode(self):
+        """Runs an episode"""
+        raise NotImplementedError
+
+    def run_experiment(self):
+        """Runs a number of epsiodes"""
+        raise NotImplementedError
+
+
+class Trainer(Runner):
+
+    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, downscale=84, memory_size=500000, max_ep_steps=1000000,
+                 reset_target=10000, final_exp_frame=1000000, gamma=0.9, optimizer=optim.Adam):
+        super(Trainer, self).__init__(env, agent, downscale)
         self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
         self.memory = memory_func(memory_size)
         self.optimizer = optimizer(self.agent.q_network.parameters())
@@ -155,21 +184,13 @@ class Trainer(object):
         frame_stack = self.agent.frame_stack
         self.frame_stacker = KLastFrames(frame_stack)
 
-    @staticmethod
-    def preprocess_image(input_image):
-        """Permute images to the PyTorch ordering (CxWxH)"""
-        # TODO: Rescale image?!
-        if len(input_image.shape) != 3:
-            return input_image.unsqueeze_(0)
-        return input_image.permute([2,0,1])
-
     def episode(self):
         steps = 0
         # Do resets
         self.env.reset_game()
         self.frame_stacker.reset()
         # Start training
-        state = self.preprocess_image(torch.Tensor(self.env.getScreenGrayscale()))
+        state = self.preprocess_image(self.env.getScreenGrayscale())
         self.frame_stacker.push(state)
         while self.env.game_over() is False and steps < self.max_ep_steps:
             # Need to fill frame stacker
@@ -181,7 +202,7 @@ class Trainer(object):
                 psi_state = self.frame_stacker.get()
                 action = self.agent.get_action(psi_state)
             reward = self.env.act(action)
-            state = self.preprocess_image(torch.Tensor(self.env.getScreenGrayscale()))
+            state = self.preprocess_image(self.env.getScreenGrayscale())
             self.frame_stacker.push(state)
             if steps > self.frame_stacker.k:
                 psi_next_state = self.frame_stacker.get()
@@ -203,7 +224,7 @@ class Trainer(object):
     def set_eps(self):
         self.agent.eps = np.max([0.1, (0.1 + 0.9 * (1 - self.total_steps/self.final_exp_frame))])
 
-    def run_training(self, num_episodes=1000):
+    def run_experiment(self, num_episodes=1000):
         # TODO: Print Losses every so often
         for i in range(num_episodes):
             print("Starting New Episode")
