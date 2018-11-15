@@ -10,6 +10,30 @@ Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
 
+class KLastFrames(object):
+    """Does the \psi function within the DQN paper with luminance"""
+    def __init__(self, k):
+        self.k = k
+        self.memory = []
+
+    def push(self, new_frame):
+        """Adds a new frame to the temporary cache"""
+        if not len(self.memory) == self.k:
+            self.memory.append(new_frame)
+        else:
+            self.memory.pop(0)
+            self.memory.append(new_frame)
+            assert len(self.memory) == self.k, "Memory is the wrong size!"
+
+    def get(self):
+        assert len(self.memory) == self.k, "Trying to get %r-frames before full!" % self.k
+        return torch.cat(self.memory)
+
+    def reset(self):
+        """Resets the frame stacker"""
+        self.memory = []
+
+
 class ReplayMemory(object):
 
     def __init__(self, capacity):
@@ -35,10 +59,10 @@ class ReplayMemory(object):
 
 class DQN(nn.Module):
 
-    def __init__(self, action_set, input_height=512, input_width=288):
+    def __init__(self, action_set, frame_stack=4, input_height=512, input_width=288):
         super(DQN, self).__init__()
         num_actions = len(action_set)
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=4, stride=2)
+        self.conv1 = nn.Conv2d(frame_stack, 16, kernel_size=4, stride=2)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=4, stride=2)
         self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 64)
@@ -68,20 +92,24 @@ class DQN(nn.Module):
 
 class DQNAgent(object):
 
-    def __init__(self, action_set):
-        self.q_network = DQN(action_set)
-        self.q_target = DQN(action_set)
+    def __init__(self, action_set, frame_stack=4):
+        self.frame_stack = frame_stack
+        self.q_network = DQN(action_set, frame_stack=frame_stack)
+        self.q_target = DQN(action_set, frame_stack=frame_stack)
         self.eps = 1.0
         self.action_set = action_set
 
     def update_target(self):
         self.q_target.load_state_dict(self.q_network.state_dict())
 
+    def random_action(self):
+        return np.random.choice(self.action_set)
+
     def get_action(self, in_frame):
         # eps-greedy exploration
         # if rand number is greater than eps, then explore
         if np.random.rand() < self.eps:
-            return np.random.choice(self.action_set)
+            return self.random_action()
         else:
             argmax = np.argmax(self.q_network(in_frame))
             return self.action_set[argmax]
@@ -97,12 +125,16 @@ class DQNLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, transition_in, game_over):
-        state, action, next_state, reward = transition_in
-        pred_return = self.q_network(state)[self.action_set.index(action)]
+        states, actions, next_states, rewards = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
+        pred_return_all = self.q_network(torch.stack(states))
+        pred_return = []
+        for pred_return_row, action in zip(pred_return_all, actions):
+            pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze_(0))
+        pred_return = torch.cat(pred_return)
         if not game_over:
-            one_step_return = reward + self.gamma * torch.max(self.q_target(next_state))
+            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.stack(next_states)), dim=1)[0]
         else:
-            one_step_return = reward
+            one_step_return = torch.Tensor(rewards)
         return F.mse_loss(pred_return, one_step_return)
 
 
@@ -120,40 +152,58 @@ class Trainer(object):
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
         self.total_steps = 0
+        frame_stack = self.agent.frame_stack
+        self.frame_stacker = KLastFrames(frame_stack)
 
     @staticmethod
     def preprocess_image(input_image):
+        """Permute images to the PyTorch ordering (CxWxH)"""
+        if len(input_image.shape) != 3:
+            return input_image.unsqueeze_(0)
         return input_image.permute([2,0,1])
 
     def episode(self):
-        # TODO: Figure out how to get stacked input from environment
         steps = 0
+        # Do resets
         self.env.reset_game()
-        state = self.preprocess_image(torch.Tensor(self.env.getScreenRGB()))
+        self.frame_stacker.reset()
+        # Start training
+        state = self.preprocess_image(torch.Tensor(self.env.getScreenGrayscale()))
+        self.frame_stacker.push(state)
         while self.env.game_over() is False and steps < self.max_ep_steps:
-            action = self.agent.get_action(state.unsqueeze_(0))
-            reward = self.env.act(action)
-            next_state = self.preprocess_image(torch.Tensor(self.env.getScreenRGB()))
-            self.memory.push(state, action, next_state, reward)
-            state = next_state
-            if self.total_steps+1 < self.batch_size:
-                this_batch_size = self.total_steps+1
+            # Need to fill frame stacker
+            if steps < self.frame_stacker.k:
+                # TODO: None vs random?
+                # action = self.agent.random_action()
+                action = None
             else:
-                this_batch_size = self.batch_size
-            trans_batch = self.memory.sample(this_batch_size)
-            loss = self.loss(trans_batch, self.env.game_over())
-            loss.backward()
-            self.optimizer.step()
+                psi_state = self.frame_stacker.get()
+                action = self.agent.get_action(psi_state)
+            reward = self.env.act(action)
+            state = self.preprocess_image(torch.Tensor(self.env.getScreenGrayscale()))
+            self.frame_stacker.push(state)
+            if steps > self.frame_stacker.k:
+                psi_next_state = self.frame_stacker.get()
+                self.memory.push(psi_state, action, psi_next_state, reward)
             self.total_steps += 1
             steps += 1
             self.set_eps()
-            if self.total_steps % self.reset_target == 0:
+            if self.total_steps <= self.batch_size + self.frame_stacker.k:    # if there's not enough samples accumulated, then don't backprop
+                continue
+            trans_batch = self.memory.sample(self.batch_size)
+            loss = self.loss(trans_batch, self.env.game_over())
+            loss.backward()
+            self.optimizer.step()
+            if self.total_steps % self.reset_target == 0:   # sync up the target and
+                print("Updating Target")
                 self.agent.update_target()
 
-    # Function to decrease exploration as we increase steps
+    # Function to decrease exploration as we increase steps (copying the DeepMind paper)
     def set_eps(self):
         self.agent.eps = np.max([0.1, (0.1 + 0.9 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_training(self, num_episodes=1000):
+        # TODO: Print Losses every so often
         for i in range(num_episodes):
+            print("Starting New Episode")
             self.episode()
