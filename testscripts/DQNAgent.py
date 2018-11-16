@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 import numpy as np
+from torch.autograd import Variable
 import random
 from torchvision import transforms
 from collections import namedtuple
@@ -125,6 +125,7 @@ class DQNLoss(nn.Module):
         self.q_target = q_target
         self.action_set = action_set
         self.gamma = gamma
+        self.loss = nn.SmoothL1Loss()
 
     def forward(self, transition_in, game_over):
         states, actions, next_states, rewards = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
@@ -137,15 +138,19 @@ class DQNLoss(nn.Module):
             one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.cat(next_states)), dim=1)[0]
         else:
             one_step_return = torch.Tensor(rewards)
-        return F.mse_loss(pred_return, one_step_return)
+        pred_return = Variable(pred_return, requires_grad=True)
+        one_step_return = Variable(one_step_return, requires_grad=False)
+        return self.loss(pred_return, one_step_return)
 
 
 class Runner(object):
     """Runs the experiments (training and testing inherit from this)"""
-    def __init__(self, env, agent, downscale=84):
+    def __init__(self, env, agent, downscale=84, max_ep_steps=1000000):
         self.env = env
         self.agent = agent
         self.transformer = transforms.Compose([transforms.Resize(downscale), transforms.CenterCrop(downscale)])
+        self.total_steps = 0
+        self.max_ep_steps = max_ep_steps
 
     def preprocess_image(self, input_image):
         """Does a few things:
@@ -169,26 +174,27 @@ class Runner(object):
 
 
 class Trainer(Runner):
-
-    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, downscale=84, memory_size=500000, max_ep_steps=1000000,
-                 reset_target=10000, final_exp_frame=1000000, gamma=0.9, optimizer=optim.Adam):
-        super(Trainer, self).__init__(env, agent, downscale)
+    # TODO: Frameskip
+    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, downscale=84,
+                 memory_size=500000, max_ep_steps=1000000, reset_target=10000, final_exp_frame=1000000, gamma=0.9,
+                 optimizer=optim.Adam):
+        super(Trainer, self).__init__(env, agent, downscale, max_ep_steps)
         self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
         self.memory = memory_func(memory_size)
         self.optimizer = optimizer(self.agent.q_network.parameters())
-        self.max_ep_steps = max_ep_steps
         self.batch_size = batch_size
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
-        self.total_steps = 0
         frame_stack = self.agent.frame_stack
         self.frame_stacker = KLastFrames(frame_stack)
+        self.reward_per_ep = []
 
     def episode(self):
         steps = 0
         # Do resets
         self.env.reset_game()
         self.frame_stacker.reset()
+        rewards = []
         # Start training
         state = self.preprocess_image(self.env.getScreenGrayscale())
         self.frame_stacker.push(state)
@@ -202,6 +208,7 @@ class Trainer(Runner):
                 psi_state = self.frame_stacker.get()
                 action = self.agent.get_action(psi_state)
             reward = self.env.act(action)
+            rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
             self.frame_stacker.push(state)
             if steps > self.frame_stacker.k:
@@ -210,22 +217,65 @@ class Trainer(Runner):
             self.total_steps += 1
             steps += 1
             self.set_eps()
-            if self.total_steps <= self.batch_size + self.frame_stacker.k:    # if there's not enough samples accumulated, then don't backprop
+            if self.total_steps <= self.batch_size + self.frame_stacker.k:
+                # if there's not enough samples accumulated, then don't backprop
                 continue
             trans_batch = self.memory.sample(self.batch_size)
             loss = self.loss(trans_batch, self.env.game_over())
             loss.backward()
+            if self.total_steps % 1000 == 0:
+                print('Loss at %d steps is %.2f' % (self.total_steps, float(loss)))
+                print('Mean reward per episode is:', np.mean(self.reward_per_ep))
+                print('epsilon is', self.agent.eps)
+                self.reward_per_ep = []
             self.optimizer.step()
             if self.total_steps % self.reset_target == 0:   # sync up the target and
                 print("Updating Target")
                 self.agent.update_target()
+        self.reward_per_ep.append(np.sum(rewards))
 
     # Function to decrease exploration as we increase steps (copying the DeepMind paper)
     def set_eps(self):
         self.agent.eps = np.max([0.1, (0.1 + 0.9 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_experiment(self, num_episodes=1000):
-        # TODO: Print Losses every so often
+        print('Beginning Training...')
         for i in range(num_episodes):
-            print("Starting New Episode")
+            self.episode()
+
+
+class Tester(Runner):
+
+    def __init__(self, agent, env, downscale):
+        super(Tester, self).__init__(env, agent, downscale)
+        frame_stack = self.agent.frame_stack
+        self.frame_stacker = KLastFrames(frame_stack)
+
+    def episode(self):
+        steps = 0
+        # Do resets
+        self.env.reset_game()
+        self.frame_stacker.reset()
+        rewards = []
+        # Start testing
+        state = self.preprocess_image(self.env.getScreenGrayscale())
+        self.frame_stacker.push(state)
+        while self.env.game_over() is False and steps < self.max_ep_steps:
+            # Need to fill frame stacker
+            if steps < self.frame_stacker.k:
+                action = None
+            else:
+                psi_state = self.frame_stacker.get()
+                action = self.agent.get_action(psi_state)
+            reward = self.env.act(action)
+            rewards.append(reward)
+            state = self.preprocess_image(self.env.getScreenGrayscale())
+            self.frame_stacker.push(state)
+            self.total_steps += 1
+            steps += 1
+        print('This episode had %.2f reward' % (np.sum(rewards)))
+
+    def run_experiment(self, num_episodes=1000):
+        print('Beginning Testing...')
+        for i in range(num_episodes):
             self.episode()
