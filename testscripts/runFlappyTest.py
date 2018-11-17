@@ -3,7 +3,6 @@ from ple import PLE
 from DQNAgent import *
 import torch
 import datetime
-
 import os
 
 os.putenv('SDL_VIDEODRIVER', 'fbcon')
@@ -33,5 +32,8 @@ flappy_trainer.run_experiment(2000000)
 now = datetime.datetime.now()
 
 now_str = now.strftime("%Y-%m-%d-%H-%M")
+
+if not os.path.exists('./models'):
+    os.makedirs('./models')
 
 torch.save(flappy_agent.q_network.state_dict(), './models/params_dqn_' + now_str + '.pth')
