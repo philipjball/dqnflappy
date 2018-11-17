@@ -7,6 +7,7 @@ import random
 from torchvision import transforms
 from collections import namedtuple
 from PIL import Image
+from tensorboardX import SummaryWriter
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -148,7 +149,7 @@ class Runner(object):
     def __init__(self, env, agent, downscale=84, max_ep_steps=1000000):
         self.env = env
         self.agent = agent
-        self.transformer = transforms.Compose([transforms.Resize(downscale), transforms.CenterCrop(downscale)])
+        self.transformer = transforms.Compose([transforms.Resize([downscale,downscale])])
         self.total_steps = 0
         self.max_ep_steps = max_ep_steps
 
@@ -188,6 +189,7 @@ class Trainer(Runner):
         frame_stack = self.agent.frame_stack
         self.frame_stacker = KLastFrames(frame_stack)
         self.reward_per_ep = []
+        self.tb_writer = SummaryWriter()
 
     def episode(self):
         steps = 0
@@ -222,6 +224,9 @@ class Trainer(Runner):
                 continue
             trans_batch = self.memory.sample(self.batch_size)
             loss = self.loss(trans_batch, self.env.game_over())
+            self.tb_writer.add_scalar('DQN_Flappy/loss', float(loss), self.total_steps)
+            self.tb_writer.add_scalar('DQN_Flappy/reward_per_ep', np.mean(self.reward_per_ep), self.total_steps)
+            self.tb_writer.add_scalar('DQN_Flappy/epsilon', self.agent.eps, self.total_steps)
             loss.backward()
             if self.total_steps % 1000 == 0:
                 print('Loss at %d steps is %.2f' % (self.total_steps, float(loss)))
