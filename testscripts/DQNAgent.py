@@ -143,10 +143,9 @@ class DQNLoss(nn.Module):
             pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze(0))
         pred_return = torch.cat(pred_return)
         if not game_over:
-            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.cat(next_states).
-                                                                                           to(device)), dim=1)[0].detach()
+            one_step_return = torch.Tensor(rewards).to(device) + self.gamma * torch.max(self.q_target(torch.cat(next_states).to(device)), dim=1)[0].detach()
         else:
-            one_step_return = torch.Tensor(rewards)
+            one_step_return = torch.Tensor(rewards).to(device)
         pred_return = Variable(pred_return, requires_grad=True)
         one_step_return = Variable(one_step_return, requires_grad=False)
         return self.loss(pred_return, one_step_return)
