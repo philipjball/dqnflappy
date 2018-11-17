@@ -12,6 +12,11 @@ from tensorboardX import SummaryWriter
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
+if torch.cuda.is_available():
+    device = 'cuda'
+else:
+    device = 'cpu'
+
 
 class KLastFrames(object):
     """Does the \psi function within the DQN paper with luminance"""
@@ -97,8 +102,10 @@ class DQNAgent(object):
 
     def __init__(self, action_set, frame_stack=4, input_height=84, input_width=84):
         self.frame_stack = frame_stack
-        self.q_network = DQN(action_set, frame_stack=frame_stack, input_height=input_height, input_width=input_width)
-        self.q_target = DQN(action_set, frame_stack=frame_stack)
+        self.q_network = DQN(action_set, frame_stack=frame_stack, input_height=input_height,
+                             input_width=input_width).to(device)
+        self.q_target = DQN(action_set, frame_stack=frame_stack, input_height=input_height,
+                            input_width=input_width).to(device)
         self.eps = 1.0
         self.action_set = action_set
 
@@ -130,13 +137,14 @@ class DQNLoss(nn.Module):
 
     def forward(self, transition_in, game_over):
         states, actions, next_states, rewards = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        pred_return_all = self.q_network(torch.cat(states))
+        pred_return_all = self.q_network(torch.cat(states).to(device))
         pred_return = []
         for pred_return_row, action in zip(pred_return_all, actions):
             pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze(0))
         pred_return = torch.cat(pred_return)
         if not game_over:
-            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.cat(next_states)), dim=1)[0]
+            one_step_return = torch.Tensor(rewards) + self.gamma * torch.max(self.q_target(torch.cat(next_states).
+                                                                                           to(device)), dim=1)[0].detach()
         else:
             one_step_return = torch.Tensor(rewards)
         pred_return = Variable(pred_return, requires_grad=True)
@@ -197,7 +205,7 @@ class Trainer(Runner):
         self.env.reset_game()
         self.frame_stacker.reset()
         rewards = []
-        # Start training
+        # Start training episode
         state = self.preprocess_image(self.env.getScreenGrayscale())
         self.frame_stacker.push(state)
         while self.env.game_over() is False and steps < self.max_ep_steps:
@@ -208,7 +216,7 @@ class Trainer(Runner):
                 action = None
             else:
                 psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(psi_state)
+                action = self.agent.get_action(psi_state.to(device))
             reward = self.env.act(action)
             rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
@@ -224,19 +232,25 @@ class Trainer(Runner):
                 continue
             trans_batch = self.memory.sample(self.batch_size)
             loss = self.loss(trans_batch, self.env.game_over())
+
+            # optimize
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            if self.total_steps % self.reset_target == 0:   # sync up the target and
+                print("Updating Target")
+                self.agent.update_target()
+
+            # prints and logs
             self.tb_writer.add_scalar('DQN_Flappy/loss', float(loss), self.total_steps)
             self.tb_writer.add_scalar('DQN_Flappy/reward_per_ep', np.mean(self.reward_per_ep), self.total_steps)
             self.tb_writer.add_scalar('DQN_Flappy/epsilon', self.agent.eps, self.total_steps)
-            loss.backward()
             if self.total_steps % 1000 == 0:
                 print('Loss at %d steps is %.2f' % (self.total_steps, float(loss)))
                 print('Mean reward per episode is:', np.mean(self.reward_per_ep))
                 print('epsilon is', self.agent.eps)
                 self.reward_per_ep = []
-            self.optimizer.step()
-            if self.total_steps % self.reset_target == 0:   # sync up the target and
-                print("Updating Target")
-                self.agent.update_target()
+
         self.reward_per_ep.append(np.sum(rewards))
 
     # Function to decrease exploration as we increase steps (copying the DeepMind paper)
