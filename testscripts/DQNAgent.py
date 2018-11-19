@@ -8,6 +8,7 @@ from torchvision import transforms
 from collections import namedtuple
 from PIL import Image
 from tensorboardX import SummaryWriter
+from collections import deque
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'done'))
@@ -16,30 +17,6 @@ if torch.cuda.is_available():
     device = 'cuda'
 else:
     device = 'cpu'
-
-
-class KLastFrames(object):
-    """Does the \psi function within the DQN paper with luminance"""
-    def __init__(self, k):
-        self.k = k
-        self.memory = []
-
-    def push(self, new_frame):
-        """Adds a new frame to the temporary cache"""
-        if not len(self.memory) == self.k:
-            self.memory.append(new_frame)
-        else:
-            self.memory.pop(0)
-            self.memory.append(new_frame)
-            assert len(self.memory) == self.k, "Memory is the wrong size!"
-
-    def get(self):
-        assert len(self.memory) == self.k, "Trying to get %r-frames before full!" % self.k
-        return np.array(self.memory)
-
-    def reset(self):
-        """Resets the frame stacker"""
-        self.memory = []
 
 
 class ReplayMemory(object):
@@ -141,12 +118,11 @@ class DQNLoss(nn.Module):
 
     def forward(self, transition_in):
         states, actions, next_states, rewards, done = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        states = torch.tensor(states, dtype=torch.float, device=device) / 255
-        actions_index = torch.tensor([self.action_set.index(action) for action in actions], dtype=torch.long,
-                                     device=device)
-        next_states = torch.tensor(next_states, dtype=torch.float, device=device) / 255
-        rewards = torch.tensor(rewards, dtype=torch.float, device=device)
-        done = torch.tensor(done, dtype=torch.float, device=device)
+        states = torch.FloatTensor(states).float().to(device) / 255
+        actions_index = torch.LongTensor([self.action_set.index(action) for action in actions]).to(device)
+        next_states = torch.FloatTensor(next_states).float().to(device) / 255
+        rewards = torch.FloatTensor(rewards).to(device)
+        done = torch.FloatTensor(done).to(device)
         pred_return_all = self.q_network(states)
         pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
         one_step_return = rewards + self.gamma * self.q_target(next_states).detach().max(1)[0] * (1 - done)
@@ -161,6 +137,8 @@ class Runner(object):
         self.transformer = transforms.Compose([transforms.Resize([downscale,downscale])])
         self.total_steps = 0
         self.max_ep_steps = max_ep_steps
+        frame_stack = self.agent.frame_stack
+        self.frame_stacker = deque(maxlen=frame_stack)
 
     def preprocess_image(self, input_image):
         """Does a few things:
@@ -181,6 +159,10 @@ class Runner(object):
         """Runs a number of epsiodes"""
         raise NotImplementedError
 
+    def get_recent_states(self):
+        assert len(self.frame_stacker) == self.agent.frame_stack, "Not filled enough frames for stacking!"
+        return np.array(self.frame_stacker)
+
 
 class Trainer(Runner):
     # TODO: Frameskip
@@ -194,8 +176,6 @@ class Trainer(Runner):
         self.batch_size = batch_size
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
-        frame_stack = self.agent.frame_stack
-        self.frame_stacker = KLastFrames(frame_stack)
         self.reward_per_ep = []
         self.tb_writer = SummaryWriter()
 
@@ -203,31 +183,31 @@ class Trainer(Runner):
         steps = 0
         # Do resets
         self.env.reset_game()
-        self.frame_stacker.reset()
+        self.frame_stacker.clear()
         rewards = []
         # Start training episode
         state = self.preprocess_image(self.env.getScreenGrayscale())
-        self.frame_stacker.push(state)
+        self.frame_stacker.append(state)
         while self.env.game_over() is False and steps < self.max_ep_steps:
             # Need to fill frame stacker
-            if steps < self.frame_stacker.k:
+            if steps < self.agent.frame_stack:
                 action = None
             else:
-                psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(torch.tensor(psi_state, dtype=torch.float, device=device).unsqueeze(0)
-                                               / 255)
+                psi_state = self.get_recent_states()
+                psi_state_tensor = torch.FloatTensor(psi_state).unsqueeze(0).float().to(device) / 255
+                action = self.agent.get_action(psi_state_tensor)
             reward = self.env.act(action)
             reward = np.clip(reward, -1.0, 1.0)
             rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
-            self.frame_stacker.push(state)
-            if steps > self.frame_stacker.k:
-                psi_next_state = self.frame_stacker.get()
+            self.frame_stacker.append(state)
+            if steps > self.agent.frame_stack:
+                psi_next_state = self.get_recent_states()
                 self.memory.push(psi_state, action, psi_next_state, reward, self.env.game_over())
             self.total_steps += 1
             steps += 1
             self.set_eps()
-            if self.total_steps <= self.batch_size + self.frame_stacker.k:
+            if self.total_steps <= self.batch_size + self.agent.frame_stack:
                 # if there's not enough samples accumulated, then don't backprop
                 continue
             trans_batch = self.memory.sample(self.batch_size)
@@ -246,7 +226,7 @@ class Trainer(Runner):
             self.tb_writer.add_scalar('DQN_Flappy/reward_per_ep', np.mean(self.reward_per_ep), self.total_steps)
             self.tb_writer.add_scalar('DQN_Flappy/epsilon', self.agent.eps, self.total_steps)
             if self.total_steps % 1000 == 0:
-                print('Loss at %d steps is %.2f' % (self.total_steps, float(loss)))
+                print('Loss at %d steps is %.5f' % (self.total_steps, float(loss)))
                 print('Mean reward per episode is:', np.mean(self.reward_per_ep))
                 print('epsilon is', self.agent.eps)
                 self.reward_per_ep = []
@@ -267,8 +247,6 @@ class Tester(Runner):
 
     def __init__(self, agent, env, downscale):
         super(Tester, self).__init__(env, agent, downscale)
-        frame_stack = self.agent.frame_stack
-        self.frame_stacker = KLastFrames(frame_stack)
 
     def episode(self):
         steps = 0
