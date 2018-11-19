@@ -141,11 +141,12 @@ class DQNLoss(nn.Module):
 
     def forward(self, transition_in):
         states, actions, next_states, rewards, done = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        states = torch.Tensor(states).to(device) / 255
-        actions_index = torch.Tensor([self.action_set.index(action) for action in actions]).long()
-        next_states = torch.Tensor(next_states).to(device) / 255
-        rewards = torch.Tensor(rewards).to(device)
-        done = torch.Tensor(done).to(device)
+        states = torch.tensor(states, dtype=torch.float, device=device) / 255
+        actions_index = torch.tensor([self.action_set.index(action) for action in actions], dtype=torch.long,
+                                     device=device)
+        next_states = torch.tensor(next_states, dtype=torch.float, device=device) / 255
+        rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+        done = torch.tensor(done, dtype=torch.float, device=device)
         pred_return_all = self.q_network(states)
         pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
         one_step_return = rewards + self.gamma * self.q_target(next_states).detach().max(1)[0] * (1 - done)
