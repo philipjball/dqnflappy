@@ -35,7 +35,7 @@ class KLastFrames(object):
 
     def get(self):
         assert len(self.memory) == self.k, "Trying to get %r-frames before full!" % self.k
-        return self.memory
+        return np.array(self.memory)
 
     def reset(self):
         """Resets the frame stacker"""
@@ -70,17 +70,21 @@ class DQN(nn.Module):
     def __init__(self, action_set, frame_stack=4, input_height=84, input_width=84):
         super(DQN, self).__init__()
         num_actions = len(action_set)
-        self.conv1 = nn.Conv2d(frame_stack, 16, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1)
-        self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 128)
-        self.linear2 = nn.Linear(128, num_actions)
+        self.conv1 = nn.Conv2d(frame_stack, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 512)
+        self.linear2 = nn.Linear(512, num_actions)
+
+        self.relu = nn.ReLU()
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        return self.linear2(self.linear1(x.view(x.size(0), -1)))
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)
+        x = self.relu(self.linear1(x))
+        return self.linear2(x)
 
     @staticmethod
     def calculate_conv_out(input_height, input_width, kernel_size, stride):
@@ -95,7 +99,7 @@ class DQN(nn.Module):
         ho1, wo1 = self.calculate_conv_out(input_height, input_width, 8, 4)
         ho2, wo2 = self.calculate_conv_out(ho1, wo1, 4, 2)
         ho3, wo3 = self.calculate_conv_out(ho2, wo2, 3, 1)
-        return int(ho3 * wo3 * 32)
+        return int(ho3 * wo3 * 64)
 
 
 class DQNAgent(object):
@@ -137,15 +141,14 @@ class DQNLoss(nn.Module):
 
     def forward(self, transition_in):
         states, actions, next_states, rewards, done = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        pred_return_all = self.q_network(torch.Tensor(states).squeeze().to(device))
-        pred_return = []
-        for pred_return_row, action in zip(pred_return_all, actions):
-            pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze(0))
-        pred_return = torch.cat(pred_return)
-        done = torch.Tensor(done)
-        one_step_return = torch.Tensor(rewards).to(device) + self.gamma * \
-                          self.q_target(torch.Tensor(next_states).squeeze().to(device)).detach().max(1)[0] * \
-                          (1 - done)
+        states = torch.Tensor(states).to(device) / 255
+        actions_index = torch.Tensor([self.action_set.index(action) for action in actions]).long()
+        next_states = torch.Tensor(next_states).to(device) / 255
+        rewards = torch.Tensor(rewards).to(device)
+        done = torch.Tensor(done).to(device)
+        pred_return_all = self.q_network(states)
+        pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
+        one_step_return = rewards + self.gamma * self.q_target(next_states).detach().max(1)[0] * (1 - done)
         return self.loss(pred_return, one_step_return)
 
 
@@ -167,7 +170,6 @@ class Runner(object):
         input_image = Image.fromarray(input_image)
         input_image = self.transformer(input_image)
         input_image = np.array(input_image, dtype=np.uint8).T
-        # input_image = torch.Tensor(input_image).unsqueeze(0)
         return input_image
 
     def episode(self):
@@ -211,8 +213,9 @@ class Trainer(Runner):
                 action = None
             else:
                 psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(torch.Tensor(psi_state).unsqueeze(0).to(device))
+                action = self.agent.get_action(torch.from_numpy(psi_state).unsqueeze(0).to(device) / 255)
             reward = self.env.act(action)
+            reward = np.clip(reward, -1.0, 1.0)
             rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
             self.frame_stacker.push(state)
