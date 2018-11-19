@@ -214,7 +214,8 @@ class Trainer(Runner):
                 action = None
             else:
                 psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(torch.from_numpy(psi_state).unsqueeze(0).to(device) / 255)
+                action = self.agent.get_action(torch.tensor(psi_state, dtype=torch.float, device=device).unsqueeze(0)
+                                               / 255)
             reward = self.env.act(action)
             reward = np.clip(reward, -1.0, 1.0)
             rewards.append(reward)
