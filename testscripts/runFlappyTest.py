@@ -19,12 +19,12 @@ os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 
 game = FlappyBird()
-p = PLE(game, fps=30, display_screen=True)
+p = PLE(game, fps=30, display_screen=False)
 p.init()
 
 flappy_agent = DQNAgent(p.getActionSet(), frame_stack=4)
 
-flappy_trainer = Trainer(p, flappy_agent, DQNLoss, ReplayMemory, batch_size=32)
+flappy_trainer = Trainer(p, flappy_agent, DQNLoss, ReplayMemory, batch_size=32, memory_size=10000)
 
 flappy_trainer.run_experiment(2000000)
 

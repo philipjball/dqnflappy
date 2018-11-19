@@ -10,7 +10,7 @@ from PIL import Image
 from tensorboardX import SummaryWriter
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+                        ('state', 'action', 'next_state', 'reward', 'done'))
 
 if torch.cuda.is_available():
     device = 'cuda'
@@ -35,7 +35,7 @@ class KLastFrames(object):
 
     def get(self):
         assert len(self.memory) == self.k, "Trying to get %r-frames before full!" % self.k
-        return torch.cat(self.memory).unsqueeze(0)
+        return self.memory
 
     def reset(self):
         """Resets the frame stacker"""
@@ -135,19 +135,17 @@ class DQNLoss(nn.Module):
         self.gamma = gamma
         self.loss = nn.SmoothL1Loss()
 
-    def forward(self, transition_in, game_over):
-        states, actions, next_states, rewards = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        pred_return_all = self.q_network(torch.cat(states).to(device))
+    def forward(self, transition_in):
+        states, actions, next_states, rewards, done = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
+        pred_return_all = self.q_network(torch.Tensor(states).squeeze().to(device))
         pred_return = []
         for pred_return_row, action in zip(pred_return_all, actions):
             pred_return.append(pred_return_row[self.action_set.index(action)].unsqueeze(0))
         pred_return = torch.cat(pred_return)
-        if not game_over:
-            one_step_return = torch.Tensor(rewards).to(device) + self.gamma * torch.max(self.q_target(torch.cat(next_states).to(device)), dim=1)[0].detach()
-        else:
-            one_step_return = torch.Tensor(rewards).to(device)
-        pred_return = Variable(pred_return, requires_grad=True)
-        one_step_return = Variable(one_step_return, requires_grad=False)
+        done = torch.Tensor(done)
+        one_step_return = torch.Tensor(rewards).to(device) + self.gamma * \
+                          self.q_target(torch.Tensor(next_states).squeeze().to(device)).detach().max(1)[0] * \
+                          (1 - done)
         return self.loss(pred_return, one_step_return)
 
 
@@ -168,8 +166,8 @@ class Runner(object):
         """
         input_image = Image.fromarray(input_image)
         input_image = self.transformer(input_image)
-        input_image = np.array(input_image).T
-        input_image = torch.Tensor(input_image).unsqueeze(0)
+        input_image = np.array(input_image, dtype=np.uint8).T
+        # input_image = torch.Tensor(input_image).unsqueeze(0)
         return input_image
 
     def episode(self):
@@ -189,7 +187,7 @@ class Trainer(Runner):
         super(Trainer, self).__init__(env, agent, downscale, max_ep_steps)
         self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
         self.memory = memory_func(memory_size)
-        self.optimizer = optimizer(self.agent.q_network.parameters())
+        self.optimizer = optimizer(self.agent.q_network.parameters(), lr=1e-4)
         self.batch_size = batch_size
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
@@ -210,19 +208,17 @@ class Trainer(Runner):
         while self.env.game_over() is False and steps < self.max_ep_steps:
             # Need to fill frame stacker
             if steps < self.frame_stacker.k:
-                # TODO: None vs random?
-                # action = self.agent.random_action()
                 action = None
             else:
                 psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(psi_state.to(device))
+                action = self.agent.get_action(torch.Tensor(psi_state).unsqueeze(0).to(device))
             reward = self.env.act(action)
             rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
             self.frame_stacker.push(state)
             if steps > self.frame_stacker.k:
                 psi_next_state = self.frame_stacker.get()
-                self.memory.push(psi_state, action, psi_next_state, reward)
+                self.memory.push(psi_state, action, psi_next_state, reward, self.env.game_over())
             self.total_steps += 1
             steps += 1
             self.set_eps()
@@ -230,7 +226,7 @@ class Trainer(Runner):
                 # if there's not enough samples accumulated, then don't backprop
                 continue
             trans_batch = self.memory.sample(self.batch_size)
-            loss = self.loss(trans_batch, self.env.game_over())
+            loss = self.loss(trans_batch)
 
             # optimize
             self.optimizer.zero_grad()
