@@ -36,7 +36,8 @@ class ReplayMemory(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+        batch = random.sample(self.memory, batch_size)
+        return Transition(*(zip(*batch)))               # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
 
     def __len__(self):
         return len(self.memory)
@@ -117,12 +118,11 @@ class DQNLoss(nn.Module):
         self.loss = nn.SmoothL1Loss()
 
     def forward(self, transition_in):
-        states, actions, next_states, rewards, done = zip(*transition_in)     # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
-        states = torch.FloatTensor(states).float().to(device) / 255
-        actions_index = torch.LongTensor([self.action_set.index(action) for action in actions]).to(device)
-        next_states = torch.FloatTensor(next_states).float().to(device) / 255
-        rewards = torch.FloatTensor(rewards).to(device)
-        done = torch.FloatTensor(done).to(device)
+        states = torch.tensor(np.stack(transition_in.state), dtype=torch.float, device=device) / 255
+        actions_index = torch.tensor([self.action_set.index(action) for action in transition_in.action], dtype=torch.long, device=device)
+        next_states = torch.tensor(np.stack(transition_in.next_state), dtype=torch.float, device=device) / 255
+        rewards = torch.tensor(transition_in.reward, dtype=torch.float, device=device)
+        done = torch.tensor(transition_in.done, dtype=torch.float, device=device)
         pred_return_all = self.q_network(states)
         pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
         one_step_return = rewards + self.gamma * self.q_target(next_states).detach().max(1)[0] * (1 - done)
@@ -166,18 +166,30 @@ class Runner(object):
 
 class Trainer(Runner):
     # TODO: Frameskip
-    def __init__(self, env, agent, loss_func, memory_func, batch_size=32, downscale=84,
+    def __init__(self, env, agent, memory_func, batch_size=32, downscale=84,
                  memory_size=500000, max_ep_steps=1000000, reset_target=10000, final_exp_frame=1000000, gamma=0.9,
                  optimizer=optim.Adam):
         super(Trainer, self).__init__(env, agent, downscale, max_ep_steps)
-        self.loss = loss_func(self.agent.q_network, self.agent.q_target, self.agent.action_set, gamma)
         self.memory = memory_func(memory_size)
         self.optimizer = optimizer(self.agent.q_network.parameters(), lr=1e-4)
         self.batch_size = batch_size
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
         self.reward_per_ep = []
+        self.gamma = 0.99
         self.tb_writer = SummaryWriter()
+        self.loss = DQNLoss(self.agent.q_network, self.agent.q_target, self.agent.action_set)
+    #
+    # def loss(self, transition_in):
+    #     states = torch.tensor(np.stack(transition_in.state), dtype=torch.float, device=device) / 255
+    #     actions_index = torch.tensor([self.agent.action_set.index(action) for action in transition_in.action], dtype=torch.long, device=device)
+    #     next_states = torch.tensor(np.stack(transition_in.next_state), dtype=torch.float, device=device) / 255
+    #     rewards = torch.tensor(transition_in.reward, dtype=torch.float, device=device)
+    #     done = torch.tensor(transition_in.done, dtype=torch.float, device=device)
+    #     pred_return_all = self.agent.q_network(states)
+    #     pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
+    #     one_step_return = rewards + self.gamma * self.agent.q_target(next_states).detach().max(1)[0] * (1 - done)
+    #     return nn.functional.smooth_l1_loss(pred_return, one_step_return)
 
     def episode(self):
         steps = 0
