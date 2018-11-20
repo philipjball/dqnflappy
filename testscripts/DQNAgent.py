@@ -203,7 +203,7 @@ class Trainer(Runner):
             self.total_steps += 1
             steps += 1
             self.set_eps()
-            if self.total_steps <= self.batch_size + self.agent.frame_stack:
+            if len(self.memory) <= self.batch_size:
                 # if there's not enough samples accumulated, then don't backprop
                 continue
             trans_batch = self.memory.sample(self.batch_size)
@@ -213,7 +213,7 @@ class Trainer(Runner):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            if self.total_steps % self.reset_target == 0:   # sync up the target and
+            if self.total_steps % self.reset_target == 0:   # sync up the target to our current q network
                 print("Updating Target")
                 self.agent.update_target()
 
