@@ -1,14 +1,14 @@
+import os
+import random
+import datetime
+from collections import namedtuple, deque
+import numpy as np
+from PIL import Image
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-from torch.autograd import Variable
-import random
 from torchvision import transforms
-from collections import namedtuple
-from PIL import Image
 from tensorboardX import SummaryWriter
-from collections import deque
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'done'))
@@ -30,8 +30,8 @@ class ReplayMemory(object):
         self.memory.append(Transition(*args))
 
     def sample(self, batch_size):
-        batch = random.sample(list(self.memory), batch_size)
-        return Transition(*(zip(*batch)))               # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
+        batch = random.sample(list(self.memory), batch_size) # https://stackoverflow.com/questions/40181284/how-to-get-random-sample-from-deque-in-python-3
+        return Transition(*(zip(*batch))) # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
 
     def __len__(self):
         return len(self.memory)
@@ -118,7 +118,7 @@ class DQNLoss(nn.Module):
         rewards = torch.tensor(transition_in.reward, dtype=torch.float, device=device)
         done = torch.tensor(transition_in.done, dtype=torch.float, device=device)
         pred_return_all = self.q_network(states)
-        pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
+        pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()  # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
         one_step_return = rewards + self.gamma * self.q_target(next_states).detach().max(1)[0] * (1 - done)
         return self.loss(pred_return, one_step_return)
 
@@ -161,8 +161,8 @@ class Runner(object):
 class Trainer(Runner):
     # TODO: Frameskip
     def __init__(self, env, agent, memory_func, batch_size=32, downscale=84,
-                 memory_size=500000, max_ep_steps=1000000, reset_target=10000, final_exp_frame=1000000, gamma=0.9,
-                 optimizer=optim.Adam):
+                 memory_size=50000, max_ep_steps=1000000, reset_target=10000, final_exp_frame=100000, gamma=0.99,
+                 optimizer=optim.Adam, save_freq=100000):
         super(Trainer, self).__init__(env, agent, downscale, max_ep_steps)
         self.memory = memory_func(memory_size)
         self.optimizer = optimizer(self.agent.q_network.parameters(), lr=1e-4)
@@ -170,20 +170,10 @@ class Trainer(Runner):
         self.reset_target = reset_target
         self.final_exp_frame = final_exp_frame  # Final frame for exploration (whereby we go to eps = 0.1 henceforth)
         self.reward_per_ep = []
-        self.gamma = 0.99
+        self.gamma = gamma
         self.tb_writer = SummaryWriter()
         self.loss = DQNLoss(self.agent.q_network, self.agent.q_target, self.agent.action_set)
-    #
-    # def loss(self, transition_in):
-    #     states = torch.tensor(np.stack(transition_in.state), dtype=torch.float, device=device) / 255
-    #     actions_index = torch.tensor([self.agent.action_set.index(action) for action in transition_in.action], dtype=torch.long, device=device)
-    #     next_states = torch.tensor(np.stack(transition_in.next_state), dtype=torch.float, device=device) / 255
-    #     rewards = torch.tensor(transition_in.reward, dtype=torch.float, device=device)
-    #     done = torch.tensor(transition_in.done, dtype=torch.float, device=device)
-    #     pred_return_all = self.agent.q_network(states)
-    #     pred_return = pred_return_all.gather(1, actions_index.unsqueeze(1)).squeeze()           # https://stackoverflow.com/questions/50999977/what-does-the-gather-function-do-in-pytorch-in-layman-terms
-    #     one_step_return = rewards + self.gamma * self.agent.q_target(next_states).detach().max(1)[0] * (1 - done)
-    #     return nn.functional.smooth_l1_loss(pred_return, one_step_return)
+        self.save_freq = save_freq
 
     def episode(self):
         steps = 0
@@ -236,23 +226,37 @@ class Trainer(Runner):
                 print('Mean reward per episode is:', np.mean(self.reward_per_ep))
                 print('epsilon is', self.agent.eps)
                 self.reward_per_ep = []
+            if self.total_steps % self.save_freq == 0:
+                self.save_model()
 
         self.reward_per_ep.append(np.sum(rewards))
 
-    # Function to decrease exploration as we increase steps (copying the DeepMind paper)
     def set_eps(self):
-        self.agent.eps = np.max([0.1, (0.1 + 0.9 * (1 - self.total_steps/self.final_exp_frame))])
+        """Function to decrease exploration linearly as we increase steps (copying the DeepMind paper)"""
+        self.agent.eps = np.max([0.01, (0.01 + 0.99 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_experiment(self, num_episodes=1000):
         print('Beginning Training...')
         for i in range(num_episodes):
             self.episode()
 
+    def save_model(self):
+        now = datetime.datetime.now()
+        now_str = now.strftime("%Y-%m-%d-%H-%M")
+        steps_str = '_%dsteps' % self.total_steps
+        print('Saving Model at %d steps...' % self.total_steps)
+        if not os.path.exists('./models'):
+            os.makedirs('./models')
+        torch.save(self.agent.q_network.state_dict(), './models/params_dqn_' + now_str + steps_str + '.pth')
+
 
 class Tester(Runner):
 
     def __init__(self, agent, env, downscale):
         super(Tester, self).__init__(env, agent, downscale)
+
+    def load_model(self):
+        self.agent.q_network = torch.load('./models/params_dqn_ace.pth')
 
     def episode(self):
         steps = 0
