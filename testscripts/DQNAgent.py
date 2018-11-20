@@ -23,20 +23,14 @@ class ReplayMemory(object):
 
     def __init__(self, capacity):
         self.capacity = capacity
-        self.memory = []
-        self.position = 0
+        self.memory = deque(maxlen=self.capacity)
 
     def push(self, *args):
         """Saves a transition."""
-        # Stop appending when we reach capacity
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = Transition(*args)
-        # Modulo to wrap around when we reach the end of the list
-        self.position = (self.position + 1) % self.capacity
+        self.memory.append(Transition(*args))
 
     def sample(self, batch_size):
-        batch = random.sample(self.memory, batch_size)
+        batch = random.sample(list(self.memory), batch_size)
         return Transition(*(zip(*batch)))               # https://stackoverflow.com/questions/7558908/unpacking-a-list-tuple-of-pairs-into-two-lists-tuples
 
     def __len__(self):

@@ -26,7 +26,7 @@ flappy_agent = DQNAgent(p.getActionSet(), frame_stack=4)
 
 flappy_trainer = Trainer(p, flappy_agent, ReplayMemory, batch_size=32, memory_size=10000)
 
-flappy_trainer.run_experiment(5)
+flappy_trainer.run_experiment(10)
 
 now = datetime.datetime.now()
 
