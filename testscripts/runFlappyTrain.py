@@ -1,6 +1,10 @@
 from ple.games.flappybird import FlappyBird
 from ple import PLE
 from DQNAgent import *
+import os
+
+os.putenv('SDL_VIDEODRIVER', 'fbcon')
+os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 # #===============================DEBUG BEGIN============================##
 # import sys
@@ -11,17 +15,17 @@ from DQNAgent import *
 # stderrToServer=True)
 # #================================DEBUG END=============================##
 
+
 game = FlappyBird()
-p = PLE(game, fps=30, display_screen=True, frame_skip=2, force_fps=False)
+p = PLE(game, fps=30, display_screen=False, frame_skip=2)
 p.init()
 
 flappy_agent = DQNAgent(p.getActionSet(), frame_stack=4)
 
-flappy_tester = Tester(p, flappy_agent, 84)
-flappy_tester.load_model('models/last_trained_model.pth')
-flappy_agent.eps = 0.01
+flappy_trainer = Trainer(p, flappy_agent, ReplayMemory, batch_size=32, memory_size=500000, final_exp_frame=1000000,
+                         save_freq=10000)
 
-flappy_tester.run_experiment(100000)
+flappy_trainer.run_experiment(100000000)
 
 
 

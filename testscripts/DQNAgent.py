@@ -47,7 +47,6 @@ class DQN(nn.Module):
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
         self.linear1 = nn.Linear(self.calculate_final_size(input_height, input_width), 512)
         self.linear2 = nn.Linear(512, num_actions)
-
         self.relu = nn.ReLU()
 
     def forward(self, x):
@@ -93,8 +92,7 @@ class DQNAgent(object):
 
     def get_action(self, in_frame):
         # eps-greedy exploration
-        # if rand number is greater than eps, then explore
-        if np.random.rand() < self.eps:
+        if np.random.rand() < self.eps:     # if rand number is greater than eps, then explore
             return self.random_action()
         else:
             argmax = torch.argmax(self.q_network(in_frame))
@@ -175,7 +173,7 @@ class Trainer(Runner):
         self.loss = DQNLoss(self.agent.q_network, self.agent.q_target, self.agent.action_set)
         self.save_freq = save_freq
 
-    def episode(self):
+    def episode(self, num_samples_pre=3000):
         steps = 0
         # Do resets
         self.env.reset_game()
@@ -190,7 +188,7 @@ class Trainer(Runner):
                 action = None
             else:
                 psi_state = self.get_recent_states()
-                psi_state_tensor = torch.FloatTensor(psi_state).unsqueeze(0).float().to(device) / 255
+                psi_state_tensor = torch.tensor(psi_state, dtype=torch.float, device=device).unsqueeze(0) / 255
                 action = self.agent.get_action(psi_state_tensor)
             reward = self.env.act(action)
             reward = np.clip(reward, -1.0, 1.0)
@@ -202,10 +200,9 @@ class Trainer(Runner):
                 self.memory.push(psi_state, action, psi_next_state, reward, self.env.game_over())
             self.total_steps += 1
             steps += 1
-            self.set_eps()
-            if len(self.memory) <= self.batch_size:
-                # if there's not enough samples accumulated, then don't backprop
+            if len(self.memory) <= num_samples_pre:   # if there's not enough samples in the memory, then don't backprop
                 continue
+            self.set_eps()  # decrease exploration
             trans_batch = self.memory.sample(self.batch_size)
             loss = self.loss(trans_batch)
 
@@ -233,7 +230,7 @@ class Trainer(Runner):
 
     def set_eps(self):
         """Function to decrease exploration linearly as we increase steps (copying the DeepMind paper)"""
-        self.agent.eps = np.max([0.01, (0.01 + 0.99 * (1 - self.total_steps/self.final_exp_frame))])
+        self.agent.eps = np.max([0.001, (0.001 + 0.999 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_experiment(self, num_episodes=1000):
         print('Beginning Training...')
@@ -252,32 +249,35 @@ class Trainer(Runner):
 
 class Tester(Runner):
 
-    def __init__(self, agent, env, downscale):
+    def __init__(self, env, agent, downscale):
         super(Tester, self).__init__(env, agent, downscale)
 
-    def load_model(self):
-        self.agent.q_network = torch.load('./models/params_dqn_ace.pth')
+    def load_model(self, path):
+        params = torch.load(path, map_location={'cuda:0': 'cpu'})
+        self.agent.q_network.load_state_dict(params)
 
     def episode(self):
         steps = 0
         # Do resets
         self.env.reset_game()
-        self.frame_stacker.reset()
+        self.frame_stacker.clear()
         rewards = []
         # Start testing
         state = self.preprocess_image(self.env.getScreenGrayscale())
-        self.frame_stacker.push(state)
+        self.frame_stacker.append(state)
         while self.env.game_over() is False and steps < self.max_ep_steps:
             # Need to fill frame stacker
-            if steps < self.frame_stacker.k:
+            if steps < self.agent.frame_stack:
                 action = None
             else:
-                psi_state = self.frame_stacker.get()
-                action = self.agent.get_action(psi_state)
+                psi_state = self.get_recent_states()
+                psi_state_tensor = torch.tensor(psi_state, dtype=torch.float, device=device).unsqueeze(0) / 255
+                action = self.agent.get_action(psi_state_tensor)
             reward = self.env.act(action)
+            reward = np.clip(reward, -1.0, 1.0)
             rewards.append(reward)
             state = self.preprocess_image(self.env.getScreenGrayscale())
-            self.frame_stacker.push(state)
+            self.frame_stacker.append(state)
             self.total_steps += 1
             steps += 1
         print('This episode had %.2f reward' % (np.sum(rewards)))
