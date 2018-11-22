@@ -12,14 +12,14 @@ from DQNAgent import *
 # #================================DEBUG END=============================##
 
 game = FlappyBird()
-p = PLE(game, fps=30, display_screen=True, frame_skip=2, force_fps=False)
+p = PLE(game, fps=30, display_screen=True, frame_skip=4, force_fps=True, rng=1234)
 p.init()
 
 flappy_agent = DQNAgent(p.getActionSet(), frame_stack=4)
 
 flappy_tester = Tester(p, flappy_agent, 84)
-flappy_tester.load_model('models/last_trained_model.pth')
-flappy_agent.eps = 0.01
+flappy_tester.load_model('./models/last_trained_model.pth')
+flappy_agent.eps = 0.001
 
 flappy_tester.run_experiment(100000)
 

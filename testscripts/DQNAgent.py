@@ -230,7 +230,7 @@ class Trainer(Runner):
 
     def set_eps(self):
         """Function to decrease exploration linearly as we increase steps (copying the DeepMind paper)"""
-        self.agent.eps = np.max([0.001, (0.001 + 0.999 * (1 - self.total_steps/self.final_exp_frame))])
+        self.agent.eps = np.max([0.01, (0.01 + 0.99 * (1 - self.total_steps/self.final_exp_frame))])
 
     def run_experiment(self, num_episodes=1000):
         print('Beginning Training...')
