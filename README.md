@@ -2,6 +2,8 @@
 
 This repo implements DQN (from scratch) and learns to play Flappy Bird, specifically the PyGame/PLE implementation
 
+![example](./docs/final_model.gif)
+
 In its current version, I get the following performance averaged over 20 episodes:
 
 | Algorithm | Performance |
@@ -32,7 +34,7 @@ python runFlappy.py
 
 ## High Level Settings
 --mode 'test'                               # one of 'train' or 'test'
---testfile './models/trained_params.pth     # location of pretrained model (if 'test' is selected)
+--testfile './models/trained_params.pth'    # location of pretrained model (if 'test' is selected)
 --slow False                                # run at native 30 FPS (seems less stable)
 
 ## Training Settings
@@ -52,9 +54,13 @@ python runFlappy.py
 
 
 ## TODO:
-* Implement some of Rainbow (see spinning up)
+* Implement some of [Rainbow](https://arxiv.org/pdf/1710.02298.pdf) (see [Spinning Up](https://spinningup.openai.com/en/latest/spinningup/keypapers.html#model-free-rl))
+    * Dueling DQN
+    * Prioritized Replay Experience
+    * Double Q
 * Fork and add more
     * Games (Pong, OpenAI Gym)
-    * Algorithms (A2C, PPO, etc.)
+        * Make the model [OpenAI Gym friendly](https://github.com/lusob/gym-ple)?
+    * [Algorithms](https://spinningup.openai.com/en/latest/spinningup/spinningup.html#learn-by-doing)
     
 
