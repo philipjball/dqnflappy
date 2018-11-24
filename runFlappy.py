@@ -4,15 +4,6 @@ from DQNAgent import *
 import argparse
 import os
 
-# #===============================DEBUG BEGIN============================##
-# import sys
-# sys.path.append("pycharm-debug-py3k.egg")
-# import pydevd
-#
-# pydevd.settrace('127.0.0.1', port=5678, stdoutToServer=True,
-# stderrToServer=True)
-# #================================DEBUG END=============================##
-
 
 def setup_env_agent(display_screen, frame_skip, force_fps, reward_shaping, frame_stack, train):
     game = FlappyBird()
@@ -75,7 +66,7 @@ if __name__ == '__main__':
     parser.add_argument('--frame_stack', type=int, nargs=1, default=4,
                         help='how many frames to stack together as input to DQN')
     parser.add_argument('--gamma', type=float, nargs=1, default=0.9,
-                        help='future reward discounting parameter')
+                        help='future return discounting parameter')
     parser.add_argument('--batch_size', type=int, nargs=1, default=32,
                         help='batch size from replay memory buffer')
     parser.add_argument('--memory_size', type=int, nargs=1, default=100000,
