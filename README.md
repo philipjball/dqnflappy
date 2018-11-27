@@ -1,16 +1,16 @@
 # Flappy Bird DQN
 
-This repo implements DQN (from scratch) and learns to play Flappy Bird, specifically the PyGame/PLE implementation
+This repo implements DQN in PyTorch from scratch, and learns to play Flappy Bird, specifically the PyGame/PLE implementation
 
 ![example](./docs/final_model.gif)
 
 In its current version, I get the following performance averaged over 20 episodes:
 
-| Algorithm | Performance |
-| :----:       | :----:         |
-| DQN Vanilla  | 119.1   |
+| Algorithm     | Performance   |
+| :-----------: | :-----------: |
+| DQN Vanilla   | 119.1         |
 
-NB: The default arguments are the hyperparameters used.
+NB: The default arguments are the hyperparameters used to produce this.
 
 ## Requirements
 
@@ -51,16 +51,4 @@ python runFlappy.py
 --num_episodes 100000000                    # how many episodes to run in total (basically infinite)
 --num_samples_pre 3000                      # how many samples under a random policy to initially load into the replay memory
 ```
-
-
-## TODO:
-* Implement some of [Rainbow](https://arxiv.org/pdf/1710.02298.pdf) (see [Spinning Up](https://spinningup.openai.com/en/latest/spinningup/keypapers.html#model-free-rl))
-    * Dueling DQN
-    * Prioritized Replay Experience
-    * Double Q
-* Fork and add more
-    * Games (Pong, OpenAI Gym)
-        * Make the model [OpenAI Gym friendly](https://github.com/lusob/gym-ple)?
-    * [Algorithms](https://spinningup.openai.com/en/latest/spinningup/spinningup.html#learn-by-doing)
-    
 
